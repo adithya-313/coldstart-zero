@@ -1,0 +1,102 @@
+# Name of the workflow displayed in the GitHub Actions UI
+name: ColdStart CI Pipeline
+
+# Controls which events trigger the workflow to run
+on:
+  # Run on every push to the main branch
+  push:
+    branches:
+      - main
+  # Run on every pull request targeting the main branch
+  pull_request:
+    branches:
+      - main
+
+# jobs defines the work that this workflow performs
+jobs:
+
+  # ------------------------------------------------------------------------
+  # Job 1: static-analysis
+  # Runs Go static analysis tools to catch bugs and enforce code formatting.
+  # ------------------------------------------------------------------------
+  static-analysis:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+    # steps define the sequence of tasks to execute
+    steps:
+      # Step 1: Check out the repository code so we can analyze it
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the Go environment at version 1.21
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Use the same Go version as the builder stage in the Dockerfile
+          go-version: "1.21"
+
+      # Step 3: Run go vet to report suspicious constructs
+      - name: Run go vet
+        run: go vet ./...
+
+      # Step 4: Run go fmt and fail if any files are not properly formatted
+      # go fmt writes formatted files and returns non-zero if formatting is needed
+      - name: Check go formatting
+        run: |
+          UNFORMATTED=$(go fmt ./...)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "The following files need formatting:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+  # ------------------------------------------------------------------------
+  # Job 2: build-and-validate
+  # Builds the Docker image and enforces the strict 15MB size limit.
+  # Depends on static-analysis completing successfully first.
+  # ------------------------------------------------------------------------
+  build-and-validate:
+    # Run this job only after static-analysis succeeds
+    needs: static-analysis
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Build the Docker image using the multi-stage Dockerfile
+      - name: Build Docker image
+        run: docker build -t coldstart-api:test .
+
+      # Step 3: Extract the image size and enforce the 15MB limit
+      - name: Enforce 15MB image size limit
+        run: |
+          # Get the image size in a parsable format (e.g., "10.9MB")
+          IMAGE_SIZE=$(docker images coldstart-api:test --format "{{.Size}}")
+          echo "Image size: $IMAGE_SIZE"
+          # Strip the "MB" suffix and compare as a floating-point number
+          SIZE_NUM=$(echo "$IMAGE_SIZE" | sed 's/MB//')
+          if (( $(echo "$SIZE_NUM > 15" | bc -l) )); then
+            echo "FAILURE: Image size ($SIZE_NUM MB) exceeds 15MB limit"
+            exit 1
+          fi
+          echo "SUCCESS: Image size ($SIZE_NUM MB) is under 15MB limit"
+
+  # ------------------------------------------------------------------------
+  # Job 3: k8s-lint
+  # Validates the Kubernetes manifest YAML files for syntax correctness.
+  # ------------------------------------------------------------------------
+  k8s-lint:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Install yamllint (a YAML syntax validator)
+      - name: Install yamllint
+        run: pip install yamllint
+
+      # Step 3: Run yamllint on all YAML files in the k8s/ directory
+      - name: Validate K8s manifests with yamllint
+        run: yamllint k8s/
