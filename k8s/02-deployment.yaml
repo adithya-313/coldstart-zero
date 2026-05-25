@@ -1,0 +1,150 @@
+# apiVersion: apps/v1 is the stable API version for Deployments
+apiVersion: apps/v1
+# kind: Deployment manages a ReplicaSet that ensures N Pods are always running
+kind: Deployment
+metadata:
+  # name: coldstart-api identifies this Deployment in the cluster
+  name: coldstart-api
+  # labels help select and group this Deployment
+  labels:
+    app: coldstart-api
+spec:
+  # replicas: 3 tells Kubernetes to run three identical Pods for high availability
+  replicas: 3
+  # selector tells the Deployment which Pods to manage via labels
+  selector:
+    matchLabels:
+      app: coldstart-api
+  # template defines the Pod spec that each replica will use
+  template:
+    metadata:
+      labels:
+        app: coldstart-api
+    spec:
+      # volumes are shared storage that can be mounted by any container in the Pod
+      volumes:
+        # model-cache is a hostPath volume that persists weights on the node
+        # This mirrors the compose bind mount ./node_cache:/app/weights
+        - name: model-cache
+          hostPath:
+            # path is the directory on the Kubernetes node
+            path: /var/lib/coldstart/weights
+            # type: DirectoryOrCreate means K8s creates it if it doesn't exist
+            type: DirectoryOrCreate
+        # secret-volume mounts the coldstart-secret as files in the Pod
+        # This mirrors the compose secrets: cloud_token injection
+        - name: secret-volume
+          secret:
+            # secretName references the Secret resource defined in 01-secret.yaml
+            secretName: coldstart-secret
+
+      # initContainers run sequentially before the main app containers start.
+      # This translates the compose init-provisioner service which must
+      # complete successfully before the api service boots.
+      initContainers:
+        # name: init-provisioner identifies this init container
+        - name: init-provisioner
+          # image: alpine:latest is the same lightweight image used in compose
+          image: alpine:latest
+          # command runs an inline shell script that replicates the
+          # idempotent cache logic from provision.sh
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Fail immediately if any command fails
+              set -e
+
+              # Read the cloud_token secret from the mounted secret volume
+              CLOUD_TOKEN_FILE="/run/secrets/cloud_token"
+              if [ ! -f "$CLOUD_TOKEN_FILE" ]; then
+                  echo "ERROR: Secret not found at $CLOUD_TOKEN_FILE"
+                  exit 1
+              fi
+              CLOUD_TOKEN=$(cat "$CLOUD_TOKEN_FILE")
+              echo "Authenticating with token: hf_mock_token_***"
+
+              # Define paths for the model weights file and hash storage
+              DATA_FILE="/app/weights/dummy-model.bin"
+              SHA256_FILE="/app/weights/dummy-model.bin.sha256"
+              FILE_SIZE_MB=10
+
+              # -- CACHE CHECK -------------------------------------------------
+              # If both the data file and hash file exist, verify integrity
+              if [ -f "$DATA_FILE" ] && [ -f "$SHA256_FILE" ]; then
+                  EXPECTED_HASH=$(cat "$SHA256_FILE")
+                  ACTUAL_HASH=$(sha256sum "$DATA_FILE" | cut -d' ' -f1)
+                  if [ "$ACTUAL_HASH" = "$EXPECTED_HASH" ]; then
+                      echo "CACHE HIT: Skipping network egress"
+                      exit 0
+                  else
+                      echo "CACHE MISS: Hash mismatch, removing corrupted file..."
+                      rm -f "$DATA_FILE" "$SHA256_FILE"
+                  fi
+              fi
+
+              # -- CACHE MISS: Generate the dummy model file -------------------
+              echo "CACHE MISS: Initiating download"
+              dd if=/dev/urandom of="$DATA_FILE" bs=1M count="$FILE_SIZE_MB" 2>/dev/null
+              NEW_HASH=$(sha256sum "$DATA_FILE" | cut -d' ' -f1)
+              echo "$NEW_HASH" > "$SHA256_FILE"
+              echo "Generated $DATA_FILE ($FILE_SIZE_MB MB, SHA256: $NEW_HASH)"
+              exit 0
+
+          # volumeMounts connect the shared volumes to this container
+          volumeMounts:
+            # Mount model-cache to /app/weights so the generated file
+            # persists on the node and is available to the main API container
+            - name: model-cache
+              mountPath: /app/weights
+            # Mount secret-volume to /run/secrets so the init script can
+            # read the cloud_token file (read-only by default for secrets)
+            - name: secret-volume
+              mountPath: /run/secrets
+              readOnly: true
+
+      # containers defines the app containers that run after initContainers succeed.
+      # This translates the compose api service.
+      containers:
+        # name: api identifies the main application container
+        - name: api
+          # image: coldstart-api:v1 is the distroless Go binary built in Phase 1
+          image: coldstart-api:v1
+          # imagePullPolicy: IfNotPresent prevents pulling from a registry
+          # when the image already exists locally (for local clusters like kind)
+          imagePullPolicy: IfNotPresent
+          # ports lists the container ports to expose
+          ports:
+            # containerPort: 8080 matches the Go server from main.go
+            - containerPort: 8080
+              name: http
+          # volumeMounts for the main API container
+          volumeMounts:
+            # Mount model-cache to /app/weights as read-only so the API
+            # can read the weights but cannot modify them (zero-trust)
+            - name: model-cache
+              mountPath: /app/weights
+              readOnly: true
+
+          # livenessProbe checks if the container is alive.
+          # If this probe fails, K8s restarts the container.
+          livenessProbe:
+            httpGet:
+              # path: /health is the health endpoint from main.go
+              path: /health
+              # port: 8080 matches the container port the Go server listens on
+              port: 8080
+            # initialDelaySeconds gives the app time to start before first probe
+            initialDelaySeconds: 3
+            # periodSeconds is how often to run the probe
+            periodSeconds: 10
+
+          # readinessProbe checks if the container is ready to serve traffic.
+          # If this probe fails, K8s removes the Pod from Service endpoints.
+          # This prevents traffic routing before the micro-API is fully initialized.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
