@@ -30,7 +30,8 @@ func predictHandler(responseWriter http.ResponseWriter, httpRequest *http.Reques
 	responseWriter.Header().Set("Content-Type", "application/json")
 
 	// Define the path to the model weights file
-	weightsFilePath := "/app/weights/model.bin"
+	// The provision.sh script generates this file as dummy-model.bin
+	weightsFilePath := "/app/weights/dummy-model.bin"
 
 	// Attempt to get file information for the weights file
 	fileInfo, fileError := os.Stat(weightsFilePath)

@@ -1,0 +1,35 @@
+# Use version 3.8 of the Docker Compose specification
+version: "3.8"
+
+services:
+  # Service 1: init-provisioner
+  # This service generates (or verifies) the dummy model weights file
+  # before the API container starts. It uses an idempotent script that
+  # checks for a cached file and its SHA256 hash before generating a new one.
+  init-provisioner:
+    # Use the lightweight Alpine Linux image which includes wget and sha256sum
+    image: alpine:latest
+    # Mount the local node_cache directory so the generated file persists
+    # between container restarts (enables warm start caching)
+    volumes:
+      - ./node_cache:/app/weights
+      - ./provision.sh:/provision.sh
+    # Run the provisioning script
+    command: ["/bin/sh", "/provision.sh"]
+
+  # Service 2: api
+  # This is the distroless Go API from Phase 1. It serves /health and /predict.
+  # It depends on init-provisioner completing successfully before booting.
+  api:
+    # Build the image using the Dockerfile from Phase 1
+    build: .
+    # Expose port 8080 to the host
+    ports:
+      - "8080:8080"
+    # Mount the weights directory as read-only so the API cannot modify it
+    volumes:
+      - ./node_cache:/app/weights:ro
+    # Wait for init-provisioner to finish successfully before starting
+    depends_on:
+      init-provisioner:
+        condition: service_completed_successfully
