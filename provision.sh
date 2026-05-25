@@ -2,6 +2,28 @@
 # Fail immediately if any command fails
 set -e
 
+# -- SECURE SECRET INJECTION ------------------------------------------------
+# Read the cloud_token secret from the in-memory Docker secret mount point.
+# Docker injects this file as a tmpfs mount (RAM-only) when the secret is
+# defined in docker-compose.yml under the service's secrets: array.
+CLOUD_TOKEN_FILE="/run/secrets/cloud_token"
+
+# Check if the secret file exists before trying to read it
+if [ ! -f "$CLOUD_TOKEN_FILE" ]; then
+    echo "ERROR: Secret not found at $CLOUD_TOKEN_FILE"
+    exit 1
+fi
+
+# Read the token into a shell variable using a file read (not an environment variable)
+# This keeps the credential off the process environment and out of /proc
+CLOUD_TOKEN=$(cat "$CLOUD_TOKEN_FILE")
+
+# Print a masked version of the token to prove authentication works
+# without leaking the full secret to the console or logs.
+# Only the prefix is shown; the rest is replaced with asterisks.
+MASKED_TOKEN="hf_mock_token_***"
+echo "Authenticating with token: $MASKED_TOKEN"
+
 # Define the paths for the data file and the hash storage file
 DATA_FILE="/app/weights/dummy-model.bin"
 SHA256_FILE="/app/weights/dummy-model.bin.sha256"

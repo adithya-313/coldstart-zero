@@ -1,6 +1,15 @@
 # Use version 3.8 of the Docker Compose specification
 version: "3.8"
 
+# Define top-level secrets that are injected securely into containers
+# These secrets are mounted as tmpfs files (in-memory only) and are never
+# written to disk inside the container or exposed in environment variables.
+secrets:
+  # The cloud_token secret is read from the local file secrets/cloud_token.txt
+  # and mounted at /run/secrets/cloud_token inside the container
+  cloud_token:
+    file: ./secrets/cloud_token.txt
+
 services:
   # Service 1: init-provisioner
   # This service generates (or verifies) the dummy model weights file
@@ -14,6 +23,9 @@ services:
     volumes:
       - ./node_cache:/app/weights
       - ./provision.sh:/provision.sh
+    # Mount the cloud_token secret as an in-memory file at /run/secrets/cloud_token
+    secrets:
+      - cloud_token
     # Run the provisioning script
     command: ["/bin/sh", "/provision.sh"]
 
