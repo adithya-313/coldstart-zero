@@ -1,0 +1,14 @@
+{
+  "evaluation_status": "COMPLETED",
+  "system_metrics": {
+    "warm_boot_time_ms": "3328",
+    "internal_go_boot_time_seconds": "0.000004",
+    "api_p95_latency_ms": "5.72",
+    "api_p99_latency_ms": "7.65",
+    "total_requests_handled": "7253"
+  },
+  "security_audit": {
+    "docker_inspect_secrets_leaked": false
+  },
+  "pass_criteria_met": true
+}
